@@ -120,43 +120,55 @@ impl Universe {
         ];
         self.create_branch(subtree)
     }
+}
 
-    fn set_bit(&mut self, tr: TreeRef, (y, x): (isize, isize)) -> TreeRef {
-        let &Tree::Branch {
-            level,
-            subtree: [nw, ne, sw, se],
-            ..
-        } = self.deref()(tr)
-        else {
-            return self.create_leaf(true);
-        };
-        // Center on our child, which means moving half of its width.
-        let offset = 1 << (level - 2);
-        let subtree = match (y, x) {
-            (..0, ..0) => [self.set_bit(nw, (y + offset, x + offset)), ne, sw, se],
-            (..0, 0..) => [nw, self.set_bit(ne, (y + offset, x - offset)), sw, se],
-            (0.., ..0) => [nw, ne, self.set_bit(sw, (y - offset, x + offset)), se],
-            (0.., 0..) => [nw, ne, sw, self.set_bit(se, (y - offset, x - offset))],
-        };
-        self.create_branch(subtree)
+enum FindResult {
+    Found {
+        alive: bool,
+    },
+    Deeper {
+        p: (isize, isize),
+        idx: usize,
+        subtree: [TreeRef; 4],
+    },
+}
+
+impl Universe {
+    #[inline]
+    fn find(&self, tr: TreeRef, (y, x): (isize, isize)) -> FindResult {
+        match *self.deref()(tr) {
+            Tree::Leaf { alive } => FindResult::Found { alive },
+            Tree::Branch { level, subtree, .. } => {
+                let offset = (1 << level) / 4;
+                let (idx, p) = match (y, x) {
+                    (..0, ..0) => (0, (y + offset, x + offset)),
+                    (..0, 0..) => (1, (y + offset, x - offset)),
+                    (0.., ..0) => (2, (y - offset, x + offset)),
+                    (0.., 0..) => (3, (y - offset, x - offset)),
+                };
+                FindResult::Deeper { p, subtree, idx }
+            }
+        }
     }
 
-    fn get_bit(&self, tr: TreeRef, (y, x): (isize, isize)) -> bool {
-        match *self.deref()(tr) {
-            Tree::Leaf { alive } => alive,
-            Tree::Branch {
-                level,
-                subtree: [nw, ne, sw, se],
-                ..
+    fn set_bit(&mut self, tr: TreeRef, p: (isize, isize)) -> TreeRef {
+        match self.find(tr, p) {
+            FindResult::Found { .. } => self.create_leaf(true),
+            FindResult::Deeper {
+                p,
+                idx,
+                mut subtree,
             } => {
-                let offset = 1 << (level - 2);
-                match (y, x) {
-                    (..0, ..0) => self.get_bit(nw, (y + offset, x + offset)),
-                    (..0, 0..) => self.get_bit(ne, (y + offset, x - offset)),
-                    (0.., ..0) => self.get_bit(sw, (y - offset, x + offset)),
-                    (0.., 0..) => self.get_bit(se, (y - offset, x - offset)),
-                }
+                subtree[idx] = self.set_bit(subtree[idx], p);
+                self.create_branch(subtree)
             }
+        }
+    }
+
+    fn get_bit(&self, tr: TreeRef, p: (isize, isize)) -> bool {
+        match self.find(tr, p) {
+            FindResult::Found { alive } => alive,
+            FindResult::Deeper { p, idx, subtree } => self.get_bit(subtree[idx], p),
         }
     }
 }
@@ -170,8 +182,29 @@ mod tests {
     #[test]
     fn test_set_bit() {
         let mut universe = Universe::default();
-        let tr = universe.empty_tree(4);
+        let tr = universe.empty_tree(5);
         let tr = universe.set_bit(tr, (0, 0));
-        assert_eq!(universe.to_state(tr), State::from_str("o").unwrap());
+        let tr = universe.set_bit(tr, (0, 3));
+        let tr = universe.set_bit(tr, (0, 4));
+        let tr = universe.set_bit(tr, (0, 8));
+        let tr = universe.set_bit(tr, (0, 7));
+        let tr = universe.set_bit(tr, (0, 9));
+
+        let tr = universe.set_bit(tr, (0, -1));
+        let tr = universe.set_bit(tr, (3, -1));
+        let tr = universe.set_bit(tr, (4, -1));
+        assert_eq!(
+            universe.to_state(tr).normalize(),
+            State::from_str(
+                "
+                oo  oo  ooo
+                
+                
+                o
+                o
+                "
+            )
+            .unwrap()
+        );
     }
 }
