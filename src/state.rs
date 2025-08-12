@@ -13,6 +13,10 @@ pub struct State {
 }
 
 impl State {
+    pub fn set_bit(&mut self, p: (isize, isize)) {
+        self.cells.insert(p);
+    }
+
     pub fn step(&self) -> Self {
         let mut counts = HashMap::new();
         for &p1 in &self.cells {
@@ -36,7 +40,7 @@ impl State {
         };
         if (ys.start, xs.start) != (0, 0) {
             for (y, x) in std::mem::take(&mut self.cells) {
-                self.cells.insert((y - ys.start, x - xs.start));
+                self.set_bit((y - ys.start, x - xs.start));
             }
         }
         self
@@ -82,7 +86,7 @@ impl FromStr for State {
                 match c {
                     ' ' => (),
                     'o' => {
-                        state.cells.insert((y as isize, x as isize));
+                        state.set_bit((y as isize, x as isize));
                     }
                     _ => return Err(format!("Unexpected character {c}")),
                 }
