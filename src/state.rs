@@ -27,7 +27,7 @@ impl State {
         let mut cells = HashSet::new();
         for (p, count) in counts {
             let alive = self.cells.contains(&p);
-            if let (2..=3, true) | (3, false) = (count, alive) {
+            if let (2 | 3, true) | (3, false) = (count, alive) {
                 cells.insert(p);
             }
         }

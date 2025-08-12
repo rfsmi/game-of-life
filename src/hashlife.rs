@@ -102,21 +102,42 @@ impl Universe {
         |TreeRef(i)| &self.nodes[i]
     }
 
-    fn expand_universe(&mut self, tr: TreeRef) -> TreeRef {
-        let &Tree::Branch {
-            level,
-            subtree: [nw, ne, sw, se],
-            ..
-        } = self.deref()(tr)
-        else {
-            return self.create_branch([tr, tr, tr, tr]);
-        };
-        let border = self.empty_tree(level - 1);
+    fn expand_universe(&mut self, [nw, ne, sw, se]: [TreeRef; 4]) -> TreeRef {
+        let level = self.deref()(nw).get_level();
+        let border = self.empty_tree(level);
         let subtree = [
             self.create_branch([border, border, border, nw]),
             self.create_branch([border, border, ne, border]),
             self.create_branch([border, sw, border, border]),
             self.create_branch([se, border, border, border]),
+        ];
+        self.create_branch(subtree)
+    }
+
+    fn one_gen(&mut self, bitmask: u16) -> TreeRef {
+        let alive = bitmask & 0b0000_0010_0000 != 0;
+        let neighbours = (bitmask & 0b0111_0101_0111).count_ones();
+        self.create_leaf(match (alive, neighbours) {
+            (true, 2 | 3) | (false, 3) => true,
+            _ => false,
+        })
+    }
+
+    fn two_gen(&mut self, tr: TreeRef) -> TreeRef {
+        let mut bitmask = 0;
+        for y in -2..2 {
+            for x in -2..2 {
+                bitmask <<= 1;
+                if self.get_bit(tr, (y, x)) {
+                    bitmask += 1;
+                }
+            }
+        }
+        let subtree = [
+            self.one_gen(bitmask >> 5),
+            self.one_gen(bitmask >> 4),
+            self.one_gen(bitmask >> 1),
+            self.one_gen(bitmask >> 0),
         ];
         self.create_branch(subtree)
     }
@@ -201,6 +222,24 @@ mod tests {
                 
                 
                 o
+                o
+                "
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_expand_universe() {
+        let mut universe = Universe::default();
+        let alive = universe.create_leaf(true);
+        let dead = universe.create_leaf(false);
+        let tr = universe.expand_universe([dead, alive, alive, dead]);
+        assert_eq!(
+            universe.to_state(tr).normalize(),
+            State::from_str(
+                "
+                 o
                 o
                 "
             )
