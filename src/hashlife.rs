@@ -114,16 +114,25 @@ impl Universe {
         self.create_branch(subtree)
     }
 
-    fn one_gen(&mut self, bitmask: u16) -> TreeRef {
-        let alive = bitmask & 0b0000_0010_0000 != 0;
-        let neighbours = (bitmask & 0b0111_0101_0111).count_ones();
-        self.create_leaf(match (alive, neighbours) {
-            (true, 2 | 3) | (false, 3) => true,
-            _ => false,
-        })
+    fn l2_gen(&mut self, bitmask: u16) -> TreeRef {
+        fn alive(bitmask: u16) -> bool {
+            let alive = bitmask & 0b0000_0010_0000 != 0;
+            let neighbours = (bitmask & 0b0111_0101_0111).count_ones();
+            match (alive, neighbours) {
+                (true, 2 | 3) | (false, 3) => true,
+                _ => false,
+            }
+        }
+        let subtree = [
+            self.create_leaf(alive(bitmask >> 5)),
+            self.create_leaf(alive(bitmask >> 4)),
+            self.create_leaf(alive(bitmask >> 1)),
+            self.create_leaf(alive(bitmask >> 0)),
+        ];
+        self.create_branch(subtree)
     }
 
-    fn two_gen(&mut self, tr: TreeRef) -> TreeRef {
+    fn make_l2_bitmask(&self, tr: TreeRef) -> u16 {
         let mut bitmask = 0;
         for y in -2..2 {
             for x in -2..2 {
@@ -133,13 +142,27 @@ impl Universe {
                 }
             }
         }
-        let subtree = [
-            self.one_gen(bitmask >> 5),
-            self.one_gen(bitmask >> 4),
-            self.one_gen(bitmask >> 1),
-            self.one_gen(bitmask >> 0),
-        ];
-        self.create_branch(subtree)
+        bitmask
+    }
+
+    fn next_generation(&mut self, tr: TreeRef) -> TreeRef {
+        let &Tree::Branch {
+            level,
+            subtree: [nw, ne, sw, se],
+            population,
+        } = self.deref()(tr)
+        else {
+            panic!();
+        };
+        if population == 0 {
+            return nw;
+        }
+        if level == 2 {
+            let bitmask = self.make_l2_bitmask(tr);
+            return self.l2_gen(bitmask);
+        }
+
+        todo!()
     }
 }
 
