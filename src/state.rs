@@ -9,7 +9,7 @@ use itertools::Itertools;
 
 #[derive(Clone, Default, Debug, PartialEq)]
 pub struct State {
-    cells: HashSet<(isize, isize)>,
+    pub cells: HashSet<(isize, isize)>,
 }
 
 impl State {

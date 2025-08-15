@@ -1,5 +1,8 @@
+use itertools::Itertools;
+
 use crate::state::State;
 
+#[derive(Clone, Copy)]
 enum Tree {
     Leaf {
         alive: bool,
@@ -94,6 +97,19 @@ impl Universe {
         }
         state
     }
+
+    fn from_state(&mut self, state: State) -> TreeRef {
+        let mut r = 1;
+        let mut tr = self.empty_tree(1);
+        for (y, x) in state.cells {
+            while y.abs() >= r || x.abs() >= r {
+                tr = self.expand_universe(tr);
+                r *= 2;
+            }
+            tr = self.set_bit(tr, (y, x));
+        }
+        tr
+    }
 }
 
 impl Universe {
@@ -102,9 +118,16 @@ impl Universe {
         |TreeRef(i)| &self.nodes[i]
     }
 
-    fn expand_universe(&mut self, [nw, ne, sw, se]: [TreeRef; 4]) -> TreeRef {
-        let level = self.deref()(nw).get_level();
-        let border = self.empty_tree(level);
+    fn expand_universe(&mut self, tr: TreeRef) -> TreeRef {
+        let &Tree::Branch {
+            level,
+            subtree: [nw, ne, sw, se],
+            ..
+        } = self.deref()(tr)
+        else {
+            panic!();
+        };
+        let border = self.empty_tree(level - 1);
         let subtree = [
             self.create_branch([border, border, border, nw]),
             self.create_branch([border, border, ne, border]),
@@ -145,64 +168,88 @@ impl Universe {
         bitmask
     }
 
+    fn get_node(&self, depth: usize, tr: TreeRef, p: (isize, isize)) -> TreeRef {
+        if depth == 0 {
+            return tr;
+        }
+        let &Tree::Branch { subtree, .. } = self.deref()(tr) else {
+            panic!();
+        };
+        let (idx, p) = self.choose_subtree(depth, p);
+        self.get_node(depth - 1, subtree[idx], p)
+    }
+
+    fn translated_subtree(
+        &mut self,
+        tr: TreeRef,
+        current: usize,
+        depth: usize,
+        (y, x): (isize, isize),
+    ) -> TreeRef {
+        let ps = match depth - current {
+            0 => return self.get_node(depth, tr, (y, x)),
+            1 => [(y - 1, x - 1), (y - 1, x), (y, x - 1), (y, x)],
+            level => {
+                let offset = 1 << (level - 2);
+                [
+                    (y - offset, x - offset),
+                    (y - offset, x + offset),
+                    (y + offset, x - offset),
+                    (y + offset, x + offset),
+                ]
+            }
+        };
+        let subtree = ps.map(|p| self.translated_subtree(tr, current + 1, depth, p));
+        self.create_branch(subtree)
+    }
+
     fn next_generation(&mut self, tr: TreeRef) -> TreeRef {
         let &Tree::Branch {
             level,
-            subtree: [nw, ne, sw, se],
+            subtree,
             population,
         } = self.deref()(tr)
         else {
             panic!();
         };
         if population == 0 {
-            return nw;
+            return subtree[0];
         }
         if level == 2 {
             let bitmask = self.make_l2_bitmask(tr);
             return self.l2_gen(bitmask);
         }
-
-        todo!()
+        let subtree = [
+            self.translated_subtree(tr, 1, 3, (-1, -1)),
+            self.translated_subtree(tr, 1, 3, (-1, 1)),
+            self.translated_subtree(tr, 1, 3, (1, -1)),
+            self.translated_subtree(tr, 1, 3, (1, 1)),
+        ]
+        .map(|tr| self.next_generation(tr));
+        self.create_branch(subtree)
     }
 }
 
-enum FindResult {
-    Found {
-        alive: bool,
-    },
-    Deeper {
-        p: (isize, isize),
-        idx: usize,
-        subtree: [TreeRef; 4],
-    },
-}
-
 impl Universe {
-    #[inline]
-    fn find(&self, tr: TreeRef, (y, x): (isize, isize)) -> FindResult {
-        match *self.deref()(tr) {
-            Tree::Leaf { alive } => FindResult::Found { alive },
-            Tree::Branch { level, subtree, .. } => {
-                let offset = (1 << level) / 4;
-                let (idx, p) = match (y, x) {
-                    (..0, ..0) => (0, (y + offset, x + offset)),
-                    (..0, 0..) => (1, (y + offset, x - offset)),
-                    (0.., ..0) => (2, (y - offset, x + offset)),
-                    (0.., 0..) => (3, (y - offset, x - offset)),
-                };
-                FindResult::Deeper { p, subtree, idx }
-            }
+    fn choose_subtree(&self, depth: usize, (y, x): (isize, isize)) -> (usize, (isize, isize)) {
+        let offset = (1 << depth) / 4;
+        match (y, x) {
+            (..0, ..0) => (0, (y + offset, x + offset)),
+            (..0, 0..) => (1, (y + offset, x - offset)),
+            (0.., ..0) => (2, (y - offset, x + offset)),
+            (0.., 0..) => (3, (y - offset, x - offset)),
         }
     }
 
     fn set_bit(&mut self, tr: TreeRef, p: (isize, isize)) -> TreeRef {
-        match self.find(tr, p) {
-            FindResult::Found { .. } => self.create_leaf(true),
-            FindResult::Deeper {
-                p,
-                idx,
-                mut subtree,
+        let &tree = self.deref()(tr);
+        match tree {
+            Tree::Leaf { alive: false } => self.create_leaf(true),
+            Tree::Leaf { alive: true } => tr,
+            Tree::Branch {
+                level, mut subtree, ..
             } => {
+                let (idx, p) = self.choose_subtree(level, p);
                 subtree[idx] = self.set_bit(subtree[idx], p);
                 self.create_branch(subtree)
             }
@@ -210,9 +257,12 @@ impl Universe {
     }
 
     fn get_bit(&self, tr: TreeRef, p: (isize, isize)) -> bool {
-        match self.find(tr, p) {
-            FindResult::Found { alive } => alive,
-            FindResult::Deeper { p, idx, subtree } => self.get_bit(subtree[idx], p),
+        match *self.deref()(tr) {
+            Tree::Leaf { alive } => alive,
+            Tree::Branch { level, subtree, .. } => {
+                let (idx, p) = self.choose_subtree(level, p);
+                self.get_bit(subtree[idx], p)
+            }
         }
     }
 }
@@ -253,20 +303,47 @@ mod tests {
     }
 
     #[test]
-    fn test_expand_universe() {
+    fn test_glider() {
+        // Test a boat + glider combo
+        let states = [
+            "
+   oo       o
+   o o       o
+    o      ooo",
+            "
+   oo
+   o o     o o
+    o       oo
+            o",
+            "
+   oo 
+   o o       o
+    o      o o
+            oo",
+            "
+   oo
+   o o      o
+    o        oo
+            oo",
+            "
+   oo
+   o o       o
+    o         o
+            ooo",
+            "
+   oo
+   o o
+    o       o o
+             oo
+             o",
+        ];
         let mut universe = Universe::default();
-        let alive = universe.create_leaf(true);
-        let dead = universe.create_leaf(false);
-        let tr = universe.expand_universe([dead, alive, alive, dead]);
-        assert_eq!(
-            universe.to_state(tr).normalize(),
-            State::from_str(
-                "
-                 o
-                o
-                "
-            )
-            .unwrap()
-        );
+        for (a, b) in states.into_iter().tuple_windows() {
+            let a = universe.from_state(State::from_str(a).unwrap());
+            let a = universe.expand_universe(a);
+            let a_step = universe.next_generation(a);
+            let b = State::from_str(b).unwrap();
+            assert_eq!(universe.to_state(a_step).normalize(), b);
+        }
     }
 }
