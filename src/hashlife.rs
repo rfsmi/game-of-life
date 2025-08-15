@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use itertools::Itertools;
 
 use crate::state::State;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Tree {
     Leaf {
         alive: bool,
@@ -53,6 +55,8 @@ struct TreeRef(usize);
 #[derive(Default)]
 struct Universe {
     nodes: Vec<Tree>,
+    next_gen: HashMap<TreeRef, TreeRef>,
+    interned_nodes: HashMap<Tree, TreeRef>,
 }
 
 impl Universe {
@@ -64,9 +68,16 @@ impl Universe {
         self.create_branch([tr, tr, tr, tr])
     }
 
+    fn canonicalise(&mut self, tree: Tree) -> TreeRef {
+        *self.interned_nodes.entry(tree).or_insert_with_key(|&tree| {
+            let tr = TreeRef(self.nodes.len());
+            self.nodes.push(tree);
+            tr
+        })
+    }
+
     fn create_leaf(&mut self, alive: bool) -> TreeRef {
-        self.nodes.push(Tree::Leaf { alive });
-        TreeRef(self.nodes.len() - 1)
+        self.canonicalise(Tree::Leaf { alive })
     }
 
     fn create_branch(&mut self, subtree: [TreeRef; 4]) -> TreeRef {
@@ -75,8 +86,7 @@ impl Universe {
             level: self.deref()(subtree[0]).get_level() + 1,
             subtree,
         };
-        self.nodes.push(tree);
-        TreeRef(self.nodes.len() - 1)
+        self.canonicalise(tree)
     }
 
     fn to_state(&self, tr: TreeRef) -> State {
@@ -204,6 +214,9 @@ impl Universe {
     }
 
     fn next_generation(&mut self, tr: TreeRef) -> TreeRef {
+        if let Some(&tr) = self.next_gen.get(&tr) {
+            return tr;
+        }
         let &Tree::Branch {
             level,
             subtree,
@@ -226,7 +239,9 @@ impl Universe {
             self.translated_subtree(tr, 1, 3, (1, 1)),
         ]
         .map(|tr| self.next_generation(tr));
-        self.create_branch(subtree)
+        let next_tr = self.create_branch(subtree);
+        self.next_gen.insert(tr, next_tr);
+        next_tr
     }
 }
 
