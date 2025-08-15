@@ -1,52 +1,92 @@
 use std::collections::HashMap;
 
-use itertools::Itertools;
+use itertools::{chain, Itertools};
 
 use crate::state::State;
 
+struct HashLifeState {
+    universe: Universe,
+    depth: usize,
+    root: TreeRef,
+}
+
+impl HashLifeState {
+    fn new() -> Self {
+        let mut universe = Universe::default();
+        let depth = 2;
+        let root = universe.empty_tree(depth);
+        Self {
+            universe,
+            depth,
+            root,
+        }
+    }
+
+    fn set_bit(&mut self, (y, x): (isize, isize)) {
+        while y.abs().max(x.abs()) >= 1 << (self.depth - 1) {
+            self.root = self.universe.expand_universe(self.depth, self.root);
+            self.depth += 1;
+        }
+        self.root = self.universe.set_bit(self.depth, self.root, (y, x));
+    }
+
+    fn get_bit(&self, p: (isize, isize)) -> bool {
+        self.universe.get_bit(self.depth, self.root, p)
+    }
+
+    fn step(&mut self) {
+        // We can only step if all the border nodes in the 4x4 square are empty.
+        let empty = self.universe.empty_tree(self.depth - 2);
+        if chain!(
+            (-2..2).map(|x| (-2, x)),
+            (-1..1).map(|y| (y, -2)),
+            (-1..1).map(|y| (y, 1)),
+            (-2..2).map(|x| (1, x)),
+        )
+        .any(|p| self.universe.get_node(2, self.root, p) != empty)
+        {
+            self.root = self.universe.expand_universe(self.depth, self.root);
+            self.depth += 1;
+        }
+        self.root = self.universe.next_generation(self.depth, self.root);
+    }
+}
+
+impl From<State> for HashLifeState {
+    fn from(value: State) -> Self {
+        let mut state = HashLifeState::new();
+        for p in value.cells {
+            state.set_bit(p);
+        }
+        state
+    }
+}
+
+impl From<HashLifeState> for State {
+    fn from(hls: HashLifeState) -> Self {
+        let mut state = State::default();
+        match hls.universe.deref()(hls.root) {
+            Tree::Leaf { alive: false } => (),
+            Tree::Leaf { alive: true } => state.set_bit((0, 0)),
+            Tree::Branch { .. } => {
+                let w = 1 << (hls.depth - 1);
+                for y in -w..w {
+                    for x in -w..w {
+                        if hls.get_bit((y, x)) {
+                            state.set_bit((y, x));
+                        }
+                    }
+                }
+            }
+        }
+        state
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Tree {
-    Leaf {
-        alive: bool,
-    },
-    Branch {
-        level: usize,
-        subtree: [TreeRef; 4],
-        population: usize,
-    },
-}
-
-impl Tree {
-    fn get_level(&self) -> usize {
-        match *self {
-            Tree::Leaf { .. } => 0,
-            Tree::Branch { level, .. } => level,
-        }
-    }
-}
-
-trait Population {
-    fn get_population(self) -> usize;
-}
-
-impl<T, P> Population for T
-where
-    T: IntoIterator<Item = P>,
-    P: Population,
-{
-    fn get_population(self) -> usize {
-        self.into_iter().map(|i| i.get_population()).sum()
-    }
-}
-
-impl Population for &Tree {
-    fn get_population(self) -> usize {
-        match self {
-            Tree::Leaf { alive: false } => 0,
-            Tree::Leaf { alive: true } => 1,
-            Tree::Branch { population, .. } => *population,
-        }
-    }
+    Leaf { alive: bool },
+    Branch { subtree: [TreeRef; 4] },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -81,44 +121,7 @@ impl Universe {
     }
 
     fn create_branch(&mut self, subtree: [TreeRef; 4]) -> TreeRef {
-        let tree = Tree::Branch {
-            population: subtree.map(self.deref()).get_population(),
-            level: self.deref()(subtree[0]).get_level() + 1,
-            subtree,
-        };
-        self.canonicalise(tree)
-    }
-
-    fn to_state(&self, tr: TreeRef) -> State {
-        let mut state = State::default();
-        match self.deref()(tr) {
-            Tree::Leaf { alive: false } => (),
-            Tree::Leaf { alive: true } => state.set_bit((0, 0)),
-            Tree::Branch { level, .. } => {
-                let w = 1 << (level - 1);
-                for y in -w..w {
-                    for x in -w..w {
-                        if self.get_bit(tr, (y, x)) {
-                            state.set_bit((y, x));
-                        }
-                    }
-                }
-            }
-        }
-        state
-    }
-
-    fn from_state(&mut self, state: State) -> TreeRef {
-        let mut r = 1;
-        let mut tr = self.empty_tree(1);
-        for (y, x) in state.cells {
-            while y.abs() >= r || x.abs() >= r {
-                tr = self.expand_universe(tr);
-                r *= 2;
-            }
-            tr = self.set_bit(tr, (y, x));
-        }
-        tr
+        self.canonicalise(Tree::Branch { subtree })
     }
 }
 
@@ -128,11 +131,9 @@ impl Universe {
         |TreeRef(i)| &self.nodes[i]
     }
 
-    fn expand_universe(&mut self, tr: TreeRef) -> TreeRef {
+    fn expand_universe(&mut self, level: usize, tr: TreeRef) -> TreeRef {
         let &Tree::Branch {
-            level,
             subtree: [nw, ne, sw, se],
-            ..
         } = self.deref()(tr)
         else {
             panic!();
@@ -170,7 +171,7 @@ impl Universe {
         for y in -2..2 {
             for x in -2..2 {
                 bitmask <<= 1;
-                if self.get_bit(tr, (y, x)) {
+                if self.get_bit(2, tr, (y, x)) {
                     bitmask += 1;
                 }
             }
@@ -182,7 +183,7 @@ impl Universe {
         if depth == 0 {
             return tr;
         }
-        let &Tree::Branch { subtree, .. } = self.deref()(tr) else {
+        let &Tree::Branch { subtree } = self.deref()(tr) else {
             panic!();
         };
         let (idx, p) = self.choose_subtree(depth, p);
@@ -213,22 +214,14 @@ impl Universe {
         self.create_branch(subtree)
     }
 
-    fn next_generation(&mut self, tr: TreeRef) -> TreeRef {
+    fn next_generation(&mut self, depth: usize, tr: TreeRef) -> TreeRef {
         if let Some(&tr) = self.next_gen.get(&tr) {
             return tr;
         }
-        let &Tree::Branch {
-            level,
-            subtree,
-            population,
-        } = self.deref()(tr)
-        else {
+        let &Tree::Branch { subtree } = self.deref()(tr) else {
             panic!();
         };
-        if population == 0 {
-            return subtree[0];
-        }
-        if level == 2 {
+        if depth == 2 {
             let bitmask = self.make_l2_bitmask(tr);
             return self.l2_gen(bitmask);
         }
@@ -238,7 +231,7 @@ impl Universe {
             self.translated_subtree(tr, 1, 3, (1, -1)),
             self.translated_subtree(tr, 1, 3, (1, 1)),
         ]
-        .map(|tr| self.next_generation(tr));
+        .map(|tr| self.next_generation(depth - 1, tr));
         let next_tr = self.create_branch(subtree);
         self.next_gen.insert(tr, next_tr);
         next_tr
@@ -256,27 +249,25 @@ impl Universe {
         }
     }
 
-    fn set_bit(&mut self, tr: TreeRef, p: (isize, isize)) -> TreeRef {
+    fn set_bit(&mut self, depth: usize, tr: TreeRef, p: (isize, isize)) -> TreeRef {
         let &tree = self.deref()(tr);
         match tree {
             Tree::Leaf { alive: false } => self.create_leaf(true),
             Tree::Leaf { alive: true } => tr,
-            Tree::Branch {
-                level, mut subtree, ..
-            } => {
-                let (idx, p) = self.choose_subtree(level, p);
-                subtree[idx] = self.set_bit(subtree[idx], p);
+            Tree::Branch { mut subtree } => {
+                let (idx, p) = self.choose_subtree(depth, p);
+                subtree[idx] = self.set_bit(depth - 1, subtree[idx], p);
                 self.create_branch(subtree)
             }
         }
     }
 
-    fn get_bit(&self, tr: TreeRef, p: (isize, isize)) -> bool {
+    fn get_bit(&self, depth: usize, tr: TreeRef, p: (isize, isize)) -> bool {
         match *self.deref()(tr) {
             Tree::Leaf { alive } => alive,
-            Tree::Branch { level, subtree, .. } => {
-                let (idx, p) = self.choose_subtree(level, p);
-                self.get_bit(subtree[idx], p)
+            Tree::Branch { subtree } => {
+                let (idx, p) = self.choose_subtree(depth, p);
+                self.get_bit(depth - 1, subtree[idx], p)
             }
         }
     }
@@ -287,35 +278,6 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-
-    #[test]
-    fn test_set_bit() {
-        let mut universe = Universe::default();
-        let tr = universe.empty_tree(5);
-        let tr = universe.set_bit(tr, (0, 0));
-        let tr = universe.set_bit(tr, (0, 3));
-        let tr = universe.set_bit(tr, (0, 4));
-        let tr = universe.set_bit(tr, (0, 8));
-        let tr = universe.set_bit(tr, (0, 7));
-        let tr = universe.set_bit(tr, (0, 9));
-
-        let tr = universe.set_bit(tr, (0, -1));
-        let tr = universe.set_bit(tr, (3, -1));
-        let tr = universe.set_bit(tr, (4, -1));
-        assert_eq!(
-            universe.to_state(tr).normalize(),
-            State::from_str(
-                "
-                oo  oo  ooo
-                
-                
-                o
-                o
-                "
-            )
-            .unwrap()
-        );
-    }
 
     #[test]
     fn test_glider() {
@@ -352,13 +314,11 @@ mod tests {
              oo
              o",
         ];
-        let mut universe = Universe::default();
         for (a, b) in states.into_iter().tuple_windows() {
-            let a = universe.from_state(State::from_str(a).unwrap());
-            let a = universe.expand_universe(a);
-            let a_step = universe.next_generation(a);
+            let mut a: HashLifeState = State::from_str(a).unwrap().into();
+            a.step();
             let b = State::from_str(b).unwrap();
-            assert_eq!(universe.to_state(a_step).normalize(), b);
+            assert_eq!(Into::<State>::into(a).normalize(), b);
         }
     }
 }
