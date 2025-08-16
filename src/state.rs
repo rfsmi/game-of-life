@@ -38,9 +38,11 @@ impl State {
         let Span::Covers { ys, xs } = self.span() else {
             return self;
         };
-        if (ys.start, xs.start) != (0, 0) {
+        let dy = ys.start + ys.len() as isize / 2;
+        let dx = xs.start + xs.len() as isize / 2;
+        if (dy, dx) != (0, 0) {
             for (y, x) in std::mem::take(&mut self.cells) {
-                self.set_bit((y - ys.start, x - xs.start));
+                self.set_bit((y - dy, x - dx));
             }
         }
         self
@@ -117,8 +119,41 @@ impl Display for State {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
+
+    pub const GLIDER_STATES: [&'static str; 6] = [
+        "
+   oo       o
+   o o       o
+    o      ooo",
+        "
+   oo
+   o o     o o
+    o       oo
+            o",
+        "
+   oo 
+   o o       o
+    o      o o
+            oo",
+        "
+   oo
+   o o      o
+    o        oo
+            oo",
+        "
+   oo
+   o o       o
+    o         o
+            ooo",
+        "
+   oo
+   o o
+    o       o o
+             oo
+             o",
+    ];
 
     #[test]
     fn test_boat() {
@@ -153,22 +188,11 @@ mod tests {
 
     #[test]
     fn test_glider() {
-        // Test that the glider moves down and right.
-        let mut state = State::from_str(
-            "
-             o
-              o
-            ooo
-        ",
-        )
-        .unwrap();
-        for i in 0..100 {
-            state = state.step();
-            let Span::Covers { ys, xs } = state.span() else {
-                panic!();
-            };
-            let (dy, dx) = (1, if i % 4 >= 2 { 1 } else { 0 });
-            assert_eq!((ys.start, xs.start), (i / 4 + dy, i / 4 + dx));
+        // Test a boat + glider combo
+        for (a, b) in GLIDER_STATES.into_iter().tuple_windows() {
+            let a = State::from_str(a).unwrap().step().normalize();
+            let b = State::from_str(b).unwrap();
+            assert_eq!(a, b);
         }
     }
 }

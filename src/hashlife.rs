@@ -4,6 +4,7 @@ use itertools::{chain, Itertools};
 
 use crate::state::State;
 
+#[derive(Clone)]
 struct HashLifeState {
     universe: Universe,
     depth: usize,
@@ -22,8 +23,13 @@ impl HashLifeState {
         }
     }
 
+    fn contains(&self, (y, x): (isize, isize)) -> bool {
+        let w = 1 << (self.depth - 1);
+        (-w..w).contains(&y) && (-w..w).contains(&x)
+    }
+
     fn set_bit(&mut self, (y, x): (isize, isize)) {
-        while y.abs().max(x.abs()) >= 1 << (self.depth - 1) {
+        while !self.contains((y, x)) {
             self.root = self.universe.expand_universe(self.depth, self.root);
             self.depth += 1;
         }
@@ -49,6 +55,7 @@ impl HashLifeState {
             self.depth += 1;
         }
         self.root = self.universe.next_generation(self.depth, self.root);
+        self.depth -= 1;
     }
 }
 
@@ -92,7 +99,7 @@ enum Tree {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct TreeRef(usize);
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Universe {
     nodes: Vec<Tree>,
     next_gen: HashMap<TreeRef, TreeRef>,
@@ -218,9 +225,6 @@ impl Universe {
         if let Some(&tr) = self.next_gen.get(&tr) {
             return tr;
         }
-        let &Tree::Branch { subtree } = self.deref()(tr) else {
-            panic!();
-        };
         if depth == 2 {
             let bitmask = self.make_l2_bitmask(tr);
             return self.l2_gen(bitmask);
@@ -275,46 +279,86 @@ impl Universe {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::state::tests::GLIDER_STATES;
     use std::str::FromStr;
 
-    use super::*;
+    const L3_CROSS: &'static str = "
+        o      o
+         o    o
+          o  o  
+           oo   
+           oo   
+          o  o  
+         o    o 
+        o      o";
 
     #[test]
-    fn test_glider() {
-        // Test a boat + glider combo
-        let states = [
+    fn test_from() {
+        let state = State::from_str(
             "
    oo       o
    o o       o
     o      ooo",
+        )
+        .unwrap();
+        let hls: HashLifeState = state.clone().into();
+        assert_eq!(Into::<State>::into(hls).normalize(), state);
+    }
+
+    #[test]
+    fn test_from_depth_3() {
+        let state = State::from_str(L3_CROSS).unwrap();
+        let hls: HashLifeState = state.clone().into();
+        assert_eq!(hls.depth, 3);
+        assert_eq!(Into::<State>::into(hls).normalize(), state);
+    }
+
+    #[test]
+    fn test_translated_subtree() {
+        let HashLifeState {
+            mut universe, root, ..
+        } = State::from_str(L3_CROSS).unwrap().into();
+        let hls = HashLifeState {
+            root: universe.translated_subtree(root, 1, 3, (1, 1)),
+            universe,
+            depth: 2,
+        };
+        let state = State::from_str(
             "
-   oo
-   o o     o o
-    o       oo
+           oo   
+           oo
+             o
+              o",
+        )
+        .unwrap();
+        assert_eq!(Into::<State>::into(hls), state);
+    }
+
+    #[test]
+    fn test_single_step() {
+        let [a, b] = [
+            "ooo",
+            "
+            o
+            o
             o",
-            "
-   oo 
-   o o       o
-    o      o o
-            oo",
-            "
-   oo
-   o o      o
-    o        oo
-            oo",
-            "
-   oo
-   o o       o
-    o         o
-            ooo",
-            "
-   oo
-   o o
-    o       o o
-             oo
-             o",
         ];
-        for (a, b) in states.into_iter().tuple_windows() {
+        let state = State::from_str(a).unwrap();
+        let mut hls: HashLifeState = state.into();
+        assert_eq!(hls.depth, 2);
+        hls.step();
+        assert_eq!(hls.depth, 2);
+        assert_eq!(
+            Into::<State>::into(hls).normalize(),
+            State::from_str(b).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_glider() {
+        // Test a boat + glider combo
+        for (a, b) in GLIDER_STATES.into_iter().tuple_windows() {
             let mut a: HashLifeState = State::from_str(a).unwrap().into();
             a.step();
             let b = State::from_str(b).unwrap();
