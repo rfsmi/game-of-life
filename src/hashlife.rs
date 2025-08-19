@@ -33,11 +33,14 @@ impl HashLifeState {
             self.root = self.universe.expand_universe(self.depth, self.root);
             self.depth += 1;
         }
-        self.root = self.universe.set_bit(self.depth, self.root, (y, x));
+        let z = self.depth;
+        self.root = self.universe.set_bit(self.root, P3 { y, x, z });
     }
 
-    fn get_bit(&self, p: (isize, isize)) -> bool {
-        self.universe.get_bit(self.depth, self.root, p)
+    fn get_bit(&self, (y, x): (isize, isize)) -> bool {
+        let z = self.depth;
+        let tr = self.universe.get_node(self.root, P3 { y, x, z });
+        self.universe.alive(tr)
     }
 
     fn step(&mut self) {
@@ -49,7 +52,8 @@ impl HashLifeState {
             (-1..1).map(|y| (y, 1)),
             (-2..2).map(|x| (1, x)),
         )
-        .any(|p| self.universe.get_node(2, self.root, p) != empty)
+        .map(|(y, x)| P3 { y, x, z: 2 })
+        .any(|p| self.universe.get_node(self.root, p) != empty)
         {
             self.root = self.universe.expand_universe(self.depth, self.root);
             self.depth += 1;
@@ -72,20 +76,11 @@ impl From<State> for HashLifeState {
 impl From<HashLifeState> for State {
     fn from(hls: HashLifeState) -> Self {
         let mut state = State::default();
-        match hls.universe.deref()(hls.root) {
-            Tree::Leaf { alive: false } => (),
-            Tree::Leaf { alive: true } => state.set_bit((0, 0)),
-            Tree::Branch { .. } => {
-                let w = 1 << (hls.depth - 1);
-                for y in -w..w {
-                    for x in -w..w {
-                        if hls.get_bit((y, x)) {
-                            state.set_bit((y, x));
-                        }
-                    }
-                }
-            }
-        }
+        let w = 1 << (hls.depth - 1);
+        (-w..w)
+            .cartesian_product(-w..w)
+            .filter(|&p| hls.get_bit(p))
+            .for_each(|p| state.set_bit(p));
         state
     }
 }
@@ -107,12 +102,56 @@ struct Universe {
 }
 
 impl Universe {
-    fn empty_tree(&mut self, level: usize) -> TreeRef {
-        if level == 0 {
+    fn empty_tree(&mut self, depth: usize) -> TreeRef {
+        if depth == 0 {
             return self.create_leaf(false);
         }
-        let tr = self.empty_tree(level - 1);
+        let tr = self.empty_tree(depth - 1);
         self.create_branch([tr, tr, tr, tr])
+    }
+
+    fn get_node(&self, mut tr: TreeRef, mut p: P3) -> TreeRef {
+        while let Some(i) = p.descend() {
+            tr = self.subtree(tr)[i];
+        }
+        tr
+    }
+
+    fn set_bit(&mut self, tr: TreeRef, mut p: P3) -> TreeRef {
+        let Some(i) = p.descend() else {
+            return self.create_leaf(true);
+        };
+        let mut subtree = self.subtree(tr);
+        subtree[i] = self.set_bit(subtree[i], p);
+        self.create_branch(subtree)
+    }
+
+    fn expand_universe(&mut self, level: usize, tr: TreeRef) -> TreeRef {
+        let [nw, ne, sw, se] = self.subtree(tr);
+        let border = self.empty_tree(level - 1);
+        let subtree = [
+            self.create_branch([border, border, border, nw]),
+            self.create_branch([border, border, ne, border]),
+            self.create_branch([border, sw, border, border]),
+            self.create_branch([se, border, border, border]),
+        ];
+        self.create_branch(subtree)
+    }
+}
+
+impl Universe {
+    fn alive(&self, TreeRef(i): TreeRef) -> bool {
+        match self.nodes[i] {
+            Tree::Leaf { alive } => alive,
+            Tree::Branch { .. } => panic!(),
+        }
+    }
+
+    fn subtree(&self, TreeRef(i): TreeRef) -> [TreeRef; 4] {
+        match self.nodes[i] {
+            Tree::Leaf { .. } => panic!(),
+            Tree::Branch { subtree } => subtree,
+        }
     }
 
     fn canonicalise(&mut self, tree: Tree) -> TreeRef {
@@ -133,28 +172,6 @@ impl Universe {
 }
 
 impl Universe {
-    #[inline]
-    fn deref<'a>(&'a self) -> impl Fn(TreeRef) -> &'a Tree {
-        |TreeRef(i)| &self.nodes[i]
-    }
-
-    fn expand_universe(&mut self, level: usize, tr: TreeRef) -> TreeRef {
-        let &Tree::Branch {
-            subtree: [nw, ne, sw, se],
-        } = self.deref()(tr)
-        else {
-            panic!();
-        };
-        let border = self.empty_tree(level - 1);
-        let subtree = [
-            self.create_branch([border, border, border, nw]),
-            self.create_branch([border, border, ne, border]),
-            self.create_branch([border, sw, border, border]),
-            self.create_branch([se, border, border, border]),
-        ];
-        self.create_branch(subtree)
-    }
-
     fn l2_gen(&mut self, bitmask: u16) -> TreeRef {
         fn alive(bitmask: u16) -> bool {
             let alive = bitmask & 0b0000_0010_0000 != 0;
@@ -178,7 +195,8 @@ impl Universe {
         for y in -2..2 {
             for x in -2..2 {
                 bitmask <<= 1;
-                if self.get_bit(2, tr, (y, x)) {
+                let tr = self.get_node(tr, P3 { y, x, z: 2 });
+                if self.alive(tr) {
                     bitmask += 1;
                 }
             }
@@ -186,38 +204,12 @@ impl Universe {
         bitmask
     }
 
-    fn get_node(&self, depth: usize, tr: TreeRef, p: (isize, isize)) -> TreeRef {
-        if depth == 0 {
-            return tr;
-        }
-        let &Tree::Branch { subtree } = self.deref()(tr) else {
-            panic!();
+    fn tree_at(&mut self, p: P3, wrt: (TreeRef, usize)) -> TreeRef {
+        let Some(ps) = p.quarter() else {
+            let (tr, z) = wrt;
+            return self.get_node(tr, P3 { z, ..p });
         };
-        let (idx, p) = self.choose_subtree(depth, p);
-        self.get_node(depth - 1, subtree[idx], p)
-    }
-
-    fn translated_subtree(
-        &mut self,
-        tr: TreeRef,
-        current: usize,
-        depth: usize,
-        (y, x): (isize, isize),
-    ) -> TreeRef {
-        let ps = match depth - current {
-            0 => return self.get_node(depth, tr, (y, x)),
-            1 => [(y - 1, x - 1), (y - 1, x), (y, x - 1), (y, x)],
-            level => {
-                let offset = 1 << (level - 2);
-                [
-                    (y - offset, x - offset),
-                    (y - offset, x + offset),
-                    (y + offset, x - offset),
-                    (y + offset, x + offset),
-                ]
-            }
-        };
-        let subtree = ps.map(|p| self.translated_subtree(tr, current + 1, depth, p));
+        let subtree = ps.map(|p| self.tree_at(p, wrt));
         self.create_branch(subtree)
     }
 
@@ -230,10 +222,10 @@ impl Universe {
             return self.l2_gen(bitmask);
         }
         let subtree = [
-            self.translated_subtree(tr, 1, 3, (-1, -1)),
-            self.translated_subtree(tr, 1, 3, (-1, 1)),
-            self.translated_subtree(tr, 1, 3, (1, -1)),
-            self.translated_subtree(tr, 1, 3, (1, 1)),
+            self.tree_at(P3 { y: -1, x: -1, z: 2 }, (tr, 3)),
+            self.tree_at(P3 { y: -1, x: 1, z: 2 }, (tr, 3)),
+            self.tree_at(P3 { y: 1, x: -1, z: 2 }, (tr, 3)),
+            self.tree_at(P3 { y: 1, x: 1, z: 2 }, (tr, 3)),
         ]
         .map(|tr| self.next_generation(depth - 1, tr));
         let next_tr = self.create_branch(subtree);
@@ -242,38 +234,50 @@ impl Universe {
     }
 }
 
-impl Universe {
-    fn choose_subtree(&self, depth: usize, (y, x): (isize, isize)) -> (usize, (isize, isize)) {
-        let offset = (1 << depth) / 4;
-        match (y, x) {
-            (..0, ..0) => (0, (y + offset, x + offset)),
-            (..0, 0..) => (1, (y + offset, x - offset)),
-            (0.., ..0) => (2, (y - offset, x + offset)),
-            (0.., 0..) => (3, (y - offset, x - offset)),
+#[derive(Clone, Copy)]
+struct P3 {
+    y: isize,
+    x: isize,
+    z: usize,
+}
+
+impl P3 {
+    fn descend(&mut self) -> Option<usize> {
+        if self.z == 0 {
+            return None;
         }
+        let w = (1 << self.z) / 4;
+        let (i, dy, dx) = match (self.y, self.x) {
+            (..0, ..0) => (0, w, w),
+            (..0, 0..) => (1, w, -w),
+            (0.., ..0) => (2, -w, w),
+            (0.., 0..) => (3, -w, -w),
+        };
+        if self.z == 1 {
+            (self.y, self.x) = (0, 0);
+        } else {
+            (self.y, self.x) = (self.y + dy, self.x + dx);
+        }
+        self.z -= 1;
+        Some(i)
     }
 
-    fn set_bit(&mut self, depth: usize, tr: TreeRef, p: (isize, isize)) -> TreeRef {
-        let &tree = self.deref()(tr);
-        match tree {
-            Tree::Leaf { alive: false } => self.create_leaf(true),
-            Tree::Leaf { alive: true } => tr,
-            Tree::Branch { mut subtree } => {
-                let (idx, p) = self.choose_subtree(depth, p);
-                subtree[idx] = self.set_bit(depth - 1, subtree[idx], p);
-                self.create_branch(subtree)
+    fn quarter(self) -> Option<[Self; 4]> {
+        let Self { y, x, z } = self;
+        let yxs = match z {
+            0 => return None,
+            1 => [(y - 1, x - 1), (y - 1, x), (y, x - 1), (y, x)],
+            _ => {
+                let w = 1 << (z - 2);
+                [
+                    (y - w, x - w),
+                    (y - w, x + w),
+                    (y + w, x - w),
+                    (y + w, x + w),
+                ]
             }
-        }
-    }
-
-    fn get_bit(&self, depth: usize, tr: TreeRef, p: (isize, isize)) -> bool {
-        match *self.deref()(tr) {
-            Tree::Leaf { alive } => alive,
-            Tree::Branch { subtree } => {
-                let (idx, p) = self.choose_subtree(depth, p);
-                self.get_bit(depth - 1, subtree[idx], p)
-            }
-        }
+        };
+        Some(yxs.map(|(y, x)| Self { y, x, z: z - 1 }))
     }
 }
 
@@ -294,14 +298,8 @@ mod tests {
         o      o";
 
     #[test]
-    fn test_from() {
-        let state = State::from_str(
-            "
-   oo       o
-   o o       o
-    o      ooo",
-        )
-        .unwrap();
+    fn test_single() {
+        let state = State::from_str("o").unwrap();
         let hls: HashLifeState = state.clone().into();
         assert_eq!(Into::<State>::into(hls).normalize(), state);
     }
@@ -315,12 +313,12 @@ mod tests {
     }
 
     #[test]
-    fn test_translated_subtree() {
+    fn test_tree_at() {
         let HashLifeState {
             mut universe, root, ..
         } = State::from_str(L3_CROSS).unwrap().into();
         let hls = HashLifeState {
-            root: universe.translated_subtree(root, 1, 3, (1, 1)),
+            root: universe.tree_at(P3 { y: 1, x: 1, z: 2 }, (root, 3)),
             universe,
             depth: 2,
         };
