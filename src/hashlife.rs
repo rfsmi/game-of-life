@@ -104,6 +104,7 @@ struct TreeRef(usize);
 #[derive(Default, Clone)]
 struct Universe {
     nodes: Vec<Tree>,
+    populations: Vec<usize>,
     next_gen: HashMap<(TreeRef, bool), TreeRef>,
     interned_nodes: HashMap<Tree, TreeRef>,
 }
@@ -163,9 +164,14 @@ impl Universe {
 
     fn canonicalise(&mut self, tree: Tree) -> TreeRef {
         *self.interned_nodes.entry(tree).or_insert_with_key(|&tree| {
-            let tr = TreeRef(self.nodes.len());
+            let population = match tree {
+                Tree::Leaf(true) => 1,
+                Tree::Leaf(false) => 0,
+                Tree::Branch(subtree) => subtree.map(|TreeRef(i)| self.populations[i]).iter().sum(),
+            };
+            self.populations.push(population);
             self.nodes.push(tree);
-            tr
+            TreeRef(self.nodes.len() - 1)
         })
     }
 }
@@ -367,5 +373,6 @@ mod tests {
         let b = State::from_str(b).unwrap();
         assert_eq!(Into::<State>::into(a.clone()).normalize(), b);
         a.step(64);
+        assert_eq!(a.universe.populations[a.root.0], 10);
     }
 }
