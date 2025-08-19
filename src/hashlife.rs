@@ -28,10 +28,14 @@ impl HashLifeState {
         (-w..w).contains(&y) && (-w..w).contains(&x)
     }
 
+    fn expand(&mut self) {
+        self.root = self.universe.expand_universe(self.depth, self.root);
+        self.depth += 1;
+    }
+
     fn set_bit(&mut self, (y, x): (isize, isize)) {
         while !self.contains((y, x)) {
-            self.root = self.universe.expand_universe(self.depth, self.root);
-            self.depth += 1;
+            self.expand();
         }
         let z = self.depth;
         self.root = self.universe.set_bit(self.root, P3 { y, x, z });
@@ -43,7 +47,11 @@ impl HashLifeState {
         self.universe.alive(tr)
     }
 
-    fn step(&mut self) {
+    fn step(&mut self, log2_steps: usize) {
+        let superspeed_depth = log2_steps + 2;
+        while self.depth < superspeed_depth {
+            self.expand();
+        }
         // We can only step if all the border nodes in the 4x4 square are empty.
         let empty = self.universe.empty_tree(self.depth - 2);
         if chain!(
@@ -55,10 +63,9 @@ impl HashLifeState {
         .map(|(y, x)| P3 { y, x, z: 2 })
         .any(|p| self.universe.get_node(self.root, p) != empty)
         {
-            self.root = self.universe.expand_universe(self.depth, self.root);
-            self.depth += 1;
+            self.expand();
         }
-        self.root = self.universe.next_generation(self.root, self.depth);
+        self.root = self.universe.step(self.root, self.depth, superspeed_depth);
         self.depth -= 1;
     }
 }
@@ -97,7 +104,7 @@ struct TreeRef(usize);
 #[derive(Default, Clone)]
 struct Universe {
     nodes: Vec<Tree>,
-    next_gen: HashMap<TreeRef, TreeRef>,
+    next_gen: HashMap<(TreeRef, bool), TreeRef>,
     interned_nodes: HashMap<Tree, TreeRef>,
 }
 
@@ -213,24 +220,30 @@ impl Universe {
         self.canonicalise(Tree::Branch(subtree))
     }
 
-    fn next_generation(&mut self, tr: TreeRef, depth: usize) -> TreeRef {
-        if let Some(&tr) = self.next_gen.get(&tr) {
+    fn step(&mut self, tr: TreeRef, depth: usize, superspeed_depth: usize) -> TreeRef {
+        let key = (tr, depth <= superspeed_depth);
+        if let Some(&tr) = self.next_gen.get(&key) {
             return tr;
         }
         if depth == 2 {
             let bitmask = self.make_l2_bitmask(tr);
             return self.l2_gen(bitmask);
         }
-        let subtree = [
-            self.reframe(tr, P3 { y: -1, x: -1, z: 3 }, 2),
-            self.reframe(tr, P3 { y: -1, x: 1, z: 3 }, 2),
-            self.reframe(tr, P3 { y: 1, x: -1, z: 3 }, 2),
-            self.reframe(tr, P3 { y: 1, x: 1, z: 3 }, 2),
-        ]
-        .map(|tr| self.next_generation(tr, depth - 1));
-        let next_tr = self.canonicalise(Tree::Branch(subtree));
-        self.next_gen.insert(tr, next_tr);
-        next_tr
+        let l1_trees = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+            .map(|i| (i / 3 * 2 - 2, i % 3 * 2 - 2))
+            .map(|(y, x)| self.reframe(tr, P3 { y, x, z: 3 }, 2))
+            .map(|l2| self.step(l2, depth - 1, superspeed_depth));
+        let l2_trees = [0, 1, 3, 4]
+            .map(|i| [0, 1, 3, 4].map(|j| l1_trees[i + j]))
+            .map(|subtree| self.canonicalise(Tree::Branch(subtree)));
+        let subtree = if depth <= superspeed_depth {
+            l2_trees.map(|l2| self.step(l2, depth - 1, superspeed_depth))
+        } else {
+            l2_trees.map(|l2| self.reframe(l2, P3 { y: 0, x: 0, z: 2 }, 1))
+        };
+        let tr = self.canonicalise(Tree::Branch(subtree));
+        self.next_gen.insert(key, tr);
+        tr
     }
 }
 
@@ -327,7 +340,7 @@ mod tests {
         let state = State::from_str(a).unwrap();
         let mut hls: HashLifeState = state.into();
         assert_eq!(hls.depth, 2);
-        hls.step();
+        hls.step(0);
         assert_eq!(hls.depth, 2);
         assert_eq!(
             Into::<State>::into(hls).normalize(),
@@ -340,9 +353,19 @@ mod tests {
         // Test a boat + glider combo
         for (a, b) in GLIDER_STATES.into_iter().tuple_windows() {
             let mut a: HashLifeState = State::from_str(a).unwrap().into();
-            a.step();
+            a.step(0);
             let b = State::from_str(b).unwrap();
             assert_eq!(Into::<State>::into(a).normalize(), b);
         }
+    }
+
+    #[test]
+    fn test_glider_superspeed() {
+        let (a, b) = (GLIDER_STATES[0], GLIDER_STATES[4]);
+        let mut a: HashLifeState = State::from_str(a).unwrap().into();
+        a.step(2);
+        let b = State::from_str(b).unwrap();
+        assert_eq!(Into::<State>::into(a.clone()).normalize(), b);
+        a.step(64);
     }
 }
