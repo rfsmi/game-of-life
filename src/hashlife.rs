@@ -106,6 +106,7 @@ struct TreeRef(usize);
 #[derive(Default, Clone)]
 struct Universe {
     nodes: Vec<Tree>,
+    empty_trees: Vec<TreeRef>,
     populations: Vec<usize>,
     next_gen: HashMap<(TreeRef, bool), TreeRef>,
     interned_nodes: HashMap<Tree, TreeRef>,
@@ -113,11 +114,14 @@ struct Universe {
 
 impl Universe {
     fn empty_tree(&mut self, depth: usize) -> TreeRef {
-        if depth == 0 {
-            return self.canonicalise(Tree::Leaf(false));
+        while self.empty_trees.len() <= depth {
+            let tr = match self.empty_trees.last() {
+                Some(&tr) => self.canonicalise(Tree::Branch([tr, tr, tr, tr])),
+                None => self.canonicalise(Tree::Leaf(false)),
+            };
+            self.empty_trees.push(tr);
         }
-        let tr = self.empty_tree(depth - 1);
-        self.canonicalise(Tree::Branch([tr, tr, tr, tr]))
+        self.empty_trees[depth]
     }
 
     fn get_node(&self, mut tr: TreeRef, mut p: P3) -> TreeRef {
@@ -127,13 +131,20 @@ impl Universe {
         tr
     }
 
-    fn set_bit(&mut self, tr: TreeRef, mut p: P3) -> TreeRef {
-        let Some(i) = p.descend() else {
-            return self.canonicalise(Tree::Leaf(true));
-        };
-        let mut subtree = self.subtree(tr);
-        subtree[i] = self.set_bit(subtree[i], p);
-        self.canonicalise(Tree::Branch(subtree))
+    fn set_bit(&mut self, mut tr: TreeRef, mut p: P3) -> TreeRef {
+        let mut stack = vec![];
+        while let Some(i) = p.descend() {
+            let subtree = self.subtree(tr);
+            stack.push((subtree, i));
+            tr = subtree[i];
+        }
+        stack.into_iter().rev().fold(
+            self.canonicalise(Tree::Leaf(true)),
+            |tr, (mut subtree, i)| {
+                subtree[i] = tr;
+                self.canonicalise(Tree::Branch(subtree))
+            },
+        )
     }
 
     fn expand_universe(&mut self, level: usize, tr: TreeRef) -> TreeRef {
@@ -217,38 +228,94 @@ impl Universe {
 
     fn reframe(&mut self, tr: TreeRef, p: P3, z: usize) -> TreeRef {
         // Get the tree with the node at p (w.r.t. tr) centered at depth z.
-        if let Some(ps) = (P3 { z, ..p }).quadrants() {
-            let subtree = ps.map(|P3 { y, x, z }| self.reframe(tr, P3 { y, x, ..p }, z));
-            self.canonicalise(Tree::Branch(subtree))
-        } else {
-            return self.get_node(tr, p);
+        let (z, p) = (p.z, P3 { z, ..p });
+        enum State {
+            Reframe(P3),
+            Canonicalise,
         }
+        let mut done = vec![];
+        let mut todo = vec![State::Reframe(p)];
+        while let Some(state) = todo.pop() {
+            match state {
+                State::Reframe(p) => match p.quadrants() {
+                    Some(ps) => {
+                        todo.push(State::Canonicalise);
+                        todo.extend(ps.map(State::Reframe));
+                    }
+                    None => done.push(self.get_node(tr, P3 { z, ..p })),
+                },
+                State::Canonicalise => {
+                    let subtree = [done.pop(), done.pop(), done.pop(), done.pop()];
+                    let tr = self.canonicalise(Tree::Branch(subtree.map(Option::unwrap)));
+                    done.push(tr);
+                }
+            }
+        }
+        done.pop().unwrap()
     }
 
     fn step(&mut self, tr: TreeRef, depth: usize, superspeed_depth: usize) -> TreeRef {
-        let key = (tr, depth <= superspeed_depth);
-        if let Some(&tr) = self.next_gen.get(&key) {
-            return tr;
+        enum State {
+            CheckCache(TreeRef, usize),
+            Push9(TreeRef, usize),
+            Pop9Into4(usize),
+            Pop4Into1,
+            UpdateCache((TreeRef, bool)),
         }
-        if depth == 2 {
-            let bitmask = self.make_l2_bitmask(tr);
-            return self.l2_gen(bitmask);
+        let mut done = vec![];
+        let mut stack = vec![State::CheckCache(tr, depth)];
+        while let Some(state) = stack.pop() {
+            match state {
+                State::CheckCache(tr, depth) => {
+                    let key = (tr, depth <= superspeed_depth);
+                    if let Some(&tr) = self.next_gen.get(&key) {
+                        done.push(tr);
+                    } else {
+                        stack.push(State::UpdateCache(key));
+                        stack.push(State::Push9(tr, depth));
+                    }
+                }
+                State::Push9(tr, 2) => {
+                    let bitmask = self.make_l2_bitmask(tr);
+                    done.push(self.l2_gen(bitmask));
+                }
+                State::Push9(tr, depth) => {
+                    let l2_trees = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+                        .map(|i| (i / 3 * 2 - 2, i % 3 * 2 - 2))
+                        .map(|(y, x)| self.reframe(tr, P3 { y, x, z: 3 }, 2));
+                    stack.push(State::Pop4Into1);
+                    stack.push(State::Pop9Into4(depth));
+                    stack.extend(l2_trees.map(|l2| State::CheckCache(l2, depth - 1)));
+                }
+                State::Pop9Into4(depth) => {
+                    let l1_trees = [
+                        [done.pop(), done.pop(), done.pop()].map(Option::unwrap),
+                        [done.pop(), done.pop(), done.pop()].map(Option::unwrap),
+                        [done.pop(), done.pop(), done.pop()].map(Option::unwrap),
+                    ];
+                    let l2_trees = [0, 1, 3, 4]
+                        .map(|i| [0, 1, 3, 4].map(|j| l1_trees[(i + j) / 3][(i + j) % 3]))
+                        .map(|subtree| self.canonicalise(Tree::Branch(subtree)));
+                    if depth <= superspeed_depth {
+                        let subtree = l2_trees.map(|l2| State::CheckCache(l2, depth - 1));
+                        stack.extend(subtree);
+                    } else {
+                        let p = P3 { y: 0, x: 0, z: 2 };
+                        let subtree = l2_trees.map(|l2| self.reframe(l2, p, 1));
+                        done.extend(subtree.into_iter().rev());
+                    }
+                }
+                State::Pop4Into1 => {
+                    let subtree = [done.pop(), done.pop(), done.pop(), done.pop()];
+                    let tr = self.canonicalise(Tree::Branch(subtree.map(Option::unwrap)));
+                    done.push(tr);
+                }
+                State::UpdateCache(key) => {
+                    self.next_gen.insert(key, *done.last().unwrap());
+                }
+            }
         }
-        let l1_trees = [0, 1, 2, 3, 4, 5, 6, 7, 8]
-            .map(|i| (i / 3 * 2 - 2, i % 3 * 2 - 2))
-            .map(|(y, x)| self.reframe(tr, P3 { y, x, z: 3 }, 2))
-            .map(|l2| self.step(l2, depth - 1, superspeed_depth));
-        let l2_trees = [0, 1, 3, 4]
-            .map(|i| [0, 1, 3, 4].map(|j| l1_trees[i + j]))
-            .map(|subtree| self.canonicalise(Tree::Branch(subtree)));
-        let subtree = if depth <= superspeed_depth {
-            l2_trees.map(|l2| self.step(l2, depth - 1, superspeed_depth))
-        } else {
-            l2_trees.map(|l2| self.reframe(l2, P3 { y: 0, x: 0, z: 2 }, 1))
-        };
-        let tr = self.canonicalise(Tree::Branch(subtree));
-        self.next_gen.insert(key, tr);
-        tr
+        done.pop().unwrap()
     }
 }
 
@@ -389,5 +456,13 @@ mod tests {
             b.step(0);
         }
         assert_eq!(a, State::normalize(b.into()));
+    }
+
+    #[test]
+    fn test_glider_deep() {
+        // Test that advancing once in a big step is the same as doing a small
+        // step several times.
+        let mut a: HashLifeState = State::from_str(GLIDER_STATES[0]).unwrap().into();
+        a.step(1_000);
     }
 }
