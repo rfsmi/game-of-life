@@ -256,17 +256,17 @@ impl Universe {
 
     fn step(&mut self, tr: TreeRef, depth: usize, superspeed_depth: usize) -> TreeRef {
         enum State {
-            CheckCache(TreeRef, usize),
+            Step(TreeRef, usize),
             Push9(TreeRef, usize),
             Pop9Into4(usize),
             Pop4Into1,
             UpdateCache((TreeRef, bool)),
         }
         let mut done = vec![];
-        let mut stack = vec![State::CheckCache(tr, depth)];
+        let mut stack = vec![State::Step(tr, depth)];
         while let Some(state) = stack.pop() {
             match state {
-                State::CheckCache(tr, depth) => {
+                State::Step(tr, depth) => {
                     let key = (tr, depth <= superspeed_depth);
                     if let Some(&tr) = self.next_gen.get(&key) {
                         done.push(tr);
@@ -285,7 +285,14 @@ impl Universe {
                         .map(|(y, x)| self.reframe(tr, P3 { y, x, z: 3 }, 2));
                     stack.push(State::Pop4Into1);
                     stack.push(State::Pop9Into4(depth));
-                    stack.extend(l2_trees.map(|l2| State::CheckCache(l2, depth - 1)));
+                    if depth <= superspeed_depth {
+                        let subtree = l2_trees.map(|l2| State::Step(l2, depth - 1));
+                        stack.extend(subtree);
+                    } else {
+                        let p = P3 { y: 0, x: 0, z: 2 };
+                        let subtree = l2_trees.map(|l2| self.reframe(l2, p, 1));
+                        done.extend(subtree.into_iter().rev());
+                    }
                 }
                 State::Pop9Into4(depth) => {
                     let l1_trees = [
@@ -296,14 +303,8 @@ impl Universe {
                     let l2_trees = [0, 1, 3, 4]
                         .map(|i| [0, 1, 3, 4].map(|j| l1_trees[(i + j) / 3][(i + j) % 3]))
                         .map(|subtree| self.canonicalise(Tree::Branch(subtree)));
-                    if depth <= superspeed_depth {
-                        let subtree = l2_trees.map(|l2| State::CheckCache(l2, depth - 1));
-                        stack.extend(subtree);
-                    } else {
-                        let p = P3 { y: 0, x: 0, z: 2 };
-                        let subtree = l2_trees.map(|l2| self.reframe(l2, p, 1));
-                        done.extend(subtree.into_iter().rev());
-                    }
+                    let subtree = l2_trees.map(|l2| State::Step(l2, depth - 1));
+                    stack.extend(subtree);
                 }
                 State::Pop4Into1 => {
                     let subtree = [done.pop(), done.pop(), done.pop(), done.pop()];
@@ -460,9 +461,10 @@ mod tests {
 
     #[test]
     fn test_glider_deep() {
-        // Test that advancing once in a big step is the same as doing a small
-        // step several times.
+        // Test running a lot of steps.
         let mut a: HashLifeState = State::from_str(GLIDER_STATES[0]).unwrap().into();
-        a.step(1_000);
+        let population = a.universe.population(a.root);
+        a.step(1000);
+        assert_eq!(a.universe.population(a.root), population);
     }
 }
