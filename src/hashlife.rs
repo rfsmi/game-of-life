@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-use itertools::{chain, Itertools};
-
 use crate::state::State;
 
 #[derive(Clone)]
@@ -53,18 +51,11 @@ impl HashLifeState {
             self.expand();
         }
         // We can only step if all the border nodes in the 4x4 square are empty.
-        let empty = self.universe.empty_tree(self.depth - 2);
-        if chain!(
-            (-2..2).map(|x| (-2, x)),
-            (-1..1).map(|y| (y, -2)),
-            (-1..1).map(|y| (y, 1)),
-            (-2..2).map(|x| (1, x)),
-        )
-        .map(|(y, x)| P3 { y, x, z: 2 })
-        .any(|p| self.universe.get_node(self.root, p) != empty)
-        {
+        let center = self.universe.reframe(self.root, P3 { y: 0, x: 0, z: 2 }, 1);
+        if self.universe.population(center) != self.universe.population(self.root) {
             self.expand();
         }
+        self.expand();
         self.root = self.universe.step(self.root, self.depth, superspeed_depth);
         self.depth -= 1;
     }
@@ -83,11 +74,22 @@ impl From<State> for HashLifeState {
 impl From<HashLifeState> for State {
     fn from(hls: HashLifeState) -> Self {
         let mut state = State::default();
-        let w = 1 << (hls.depth - 1);
-        (-w..w)
-            .cartesian_product(-w..w)
-            .filter(|&p| hls.get_bit(p))
-            .for_each(|p| state.set_bit(p));
+        let p = P3 {
+            y: 0,
+            x: 0,
+            z: hls.depth,
+        };
+        let mut stack = vec![(hls.root, p)];
+        while let Some((tr, p)) = stack.pop() {
+            if hls.universe.population(tr) == 0 {
+                continue;
+            }
+            if let Some(ps) = p.quadrants() {
+                stack.extend(hls.universe.subtree(tr).into_iter().zip(ps));
+            } else if hls.universe.alive(tr) {
+                state.cells.insert((p.y, p.x));
+            }
+        }
         state
     }
 }
@@ -162,6 +164,10 @@ impl Universe {
         }
     }
 
+    fn population(&self, TreeRef(i): TreeRef) -> usize {
+        self.populations[i]
+    }
+
     fn canonicalise(&mut self, tree: Tree) -> TreeRef {
         *self.interned_nodes.entry(tree).or_insert_with_key(|&tree| {
             let population = match tree {
@@ -211,19 +217,12 @@ impl Universe {
 
     fn reframe(&mut self, tr: TreeRef, p: P3, z: usize) -> TreeRef {
         // Get the tree with the node at p (w.r.t. tr) centered at depth z.
-        if z == 0 {
+        if let Some(ps) = (P3 { z, ..p }).quadrants() {
+            let subtree = ps.map(|P3 { y, x, z }| self.reframe(tr, P3 { y, x, ..p }, z));
+            self.canonicalise(Tree::Branch(subtree))
+        } else {
             return self.get_node(tr, p);
         }
-        let (pos, neg) = (1 << z >> 2, -1 << z >> 2);
-        let subtree = [
-            (p.y + neg, p.x + neg),
-            (p.y + neg, p.x + pos),
-            (p.y + pos, p.x + neg),
-            (p.y + pos, p.x + pos),
-        ]
-        .map(|(y, x)| P3 { y, x, ..p })
-        .map(|p| self.reframe(tr, p, z - 1));
-        self.canonicalise(Tree::Branch(subtree))
     }
 
     fn step(&mut self, tr: TreeRef, depth: usize, superspeed_depth: usize) -> TreeRef {
@@ -280,12 +279,28 @@ impl P3 {
         self.z -= 1;
         Some(i)
     }
+
+    fn quadrants(&self) -> Option<[Self; 4]> {
+        if self.z == 0 {
+            None
+        } else {
+            let (pos, neg) = (1 << self.z >> 2, -1 << self.z >> 2);
+            let quantrants = [
+                (self.y + neg, self.x + neg, self.z - 1),
+                (self.y + neg, self.x + pos, self.z - 1),
+                (self.y + pos, self.x + neg, self.z - 1),
+                (self.y + pos, self.x + pos, self.z - 1),
+            ];
+            Some(quantrants.map(|(y, x, z)| Self { y, x, z }))
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::tests::GLIDER_STATES;
+    use itertools::Itertools;
     use std::str::FromStr;
 
     const L3_CROSS: &'static str = "
@@ -302,7 +317,7 @@ mod tests {
     fn test_single() {
         let state = State::from_str("o").unwrap();
         let hls: HashLifeState = state.clone().into();
-        assert_eq!(Into::<State>::into(hls).normalize(), state);
+        assert_eq!(State::normalize(hls.into()), state);
     }
 
     #[test]
@@ -310,7 +325,7 @@ mod tests {
         let state = State::from_str(L3_CROSS).unwrap();
         let hls: HashLifeState = state.clone().into();
         assert_eq!(hls.depth, 3);
-        assert_eq!(Into::<State>::into(hls).normalize(), state);
+        assert_eq!(State::normalize(hls.into()), state);
     }
 
     #[test]
@@ -347,11 +362,7 @@ mod tests {
         let mut hls: HashLifeState = state.into();
         assert_eq!(hls.depth, 2);
         hls.step(0);
-        assert_eq!(hls.depth, 2);
-        assert_eq!(
-            Into::<State>::into(hls).normalize(),
-            State::from_str(b).unwrap()
-        );
+        assert_eq!(State::normalize(hls.into()), State::from_str(b).unwrap());
     }
 
     #[test]
@@ -361,18 +372,22 @@ mod tests {
             let mut a: HashLifeState = State::from_str(a).unwrap().into();
             a.step(0);
             let b = State::from_str(b).unwrap();
-            assert_eq!(Into::<State>::into(a).normalize(), b);
+            assert_eq!(State::normalize(a.into()), b);
         }
     }
 
     #[test]
     fn test_glider_superspeed() {
-        let (a, b) = (GLIDER_STATES[0], GLIDER_STATES[4]);
-        let mut a: HashLifeState = State::from_str(a).unwrap().into();
-        a.step(2);
-        let b = State::from_str(b).unwrap();
-        assert_eq!(Into::<State>::into(a.clone()).normalize(), b);
-        a.step(64);
-        assert_eq!(a.universe.populations[a.root.0], 10);
+        // Test that advancing once in a big step is the same as doing a small
+        // step several times.
+        let mut a: HashLifeState = State::from_str(GLIDER_STATES[0]).unwrap().into();
+        let mut b = a.clone();
+        let log2_steps = 6;
+        a.step(log2_steps);
+        let a = State::normalize(a.into());
+        for _ in 0..1 << log2_steps {
+            b.step(0);
+        }
+        assert_eq!(a, State::normalize(b.into()));
     }
 }
