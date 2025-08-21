@@ -56,8 +56,6 @@ impl HashLife {
     }
 }
 
-pub struct HashLifeIter(HashLife);
-
 impl IntoIterator for HashLife {
     type Item = (isize, isize);
 
@@ -106,7 +104,7 @@ impl FromStr for HashLife {
 }
 
 mod eq {
-    use std::{hash::Hash, iter::zip};
+    use std::iter::zip;
 
     use super::*;
 
