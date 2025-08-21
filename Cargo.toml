@@ -1,7 +1,4 @@
-[package]
-name = "game-of-life"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-itertools = "0.14.0"
+[workspace]
+resolver = "3"
+members = ["app", "gol"]
+default-members = ["app"]
