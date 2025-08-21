@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{hash_set, HashMap, HashSet},
     fmt::{Display, Write},
     ops::Range,
     str::FromStr,
@@ -8,11 +8,11 @@ use std::{
 use itertools::Itertools;
 
 #[derive(Clone, Default, Debug, PartialEq)]
-pub struct State {
+pub struct BasicState {
     pub cells: HashSet<(isize, isize)>,
 }
 
-impl State {
+impl BasicState {
     pub fn set_bit(&mut self, p: (isize, isize)) {
         self.cells.insert(p);
     }
@@ -61,7 +61,7 @@ enum Span {
     Covers { ys: Range<isize>, xs: Range<isize> },
 }
 
-impl State {
+impl BasicState {
     fn span(&self) -> Span {
         use Span::*;
         let xs = match self.cells.iter().map(|(_, x)| *x).minmax() {
@@ -78,11 +78,29 @@ impl State {
     }
 }
 
-impl FromStr for State {
+impl IntoIterator for BasicState {
+    type Item = (isize, isize);
+
+    type IntoIter = hash_set::IntoIter<(isize, isize)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.cells.into_iter()
+    }
+}
+
+impl FromIterator<(isize, isize)> for BasicState {
+    fn from_iter<T: IntoIterator<Item = (isize, isize)>>(iter: T) -> Self {
+        Self {
+            cells: iter.into_iter().collect(),
+        }
+    }
+}
+
+impl FromStr for BasicState {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut state = State::default();
+        let mut state = BasicState::default();
         for (y, line) in s.lines().enumerate() {
             for (x, c) in line.chars().enumerate() {
                 match c {
@@ -98,7 +116,7 @@ impl FromStr for State {
     }
 }
 
-impl Display for State {
+impl Display for BasicState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Span::Covers { ys, xs } = self.span() else {
             return Ok(());
@@ -158,7 +176,7 @@ pub mod tests {
     #[test]
     fn test_boat() {
         // Boat is constant.
-        let state = State::from_str(
+        let state = BasicState::from_str(
             "
             oo
             o o
@@ -172,8 +190,8 @@ pub mod tests {
     #[test]
     fn test_blinker() {
         // Blinker blinks with period 2.
-        let state_1 = State::from_str("ooo").unwrap();
-        let state_2 = State::from_str(
+        let state_1 = BasicState::from_str("ooo").unwrap();
+        let state_2 = BasicState::from_str(
             "
             o
             o
@@ -190,8 +208,8 @@ pub mod tests {
     fn test_glider() {
         // Test a boat + glider combo
         for (a, b) in GLIDER_STATES.into_iter().tuple_windows() {
-            let a = State::from_str(a).unwrap().step().normalize();
-            let b = State::from_str(b).unwrap();
+            let a = BasicState::from_str(a).unwrap().step().normalize();
+            let b = BasicState::from_str(b).unwrap();
             assert_eq!(a, b);
         }
     }

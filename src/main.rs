@@ -1,17 +1,19 @@
 use std::str::FromStr;
 
-use crate::state::State;
+use crate::hashlife::HashLife;
 
+mod basic_state;
 mod hashlife;
-mod state;
+mod p3;
+mod universe;
 
 fn main() {
-    let state = State::from_str(
+    let mut hl: HashLife = HashLife::from_str(
         "
-o
-o
-o    oo",
+   oo       o
+   o o       o
+    o      ooo",
     )
     .unwrap();
-    println!("{state}");
+    hl.step(1000);
 }
