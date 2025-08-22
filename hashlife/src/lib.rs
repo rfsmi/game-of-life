@@ -24,13 +24,10 @@ pub struct HashLife {
 
 impl HashLife {
     pub fn new() -> Self {
-        let mut universe = Universe::default();
-        let depth = 2;
-        let root = universe.empty_tree(depth);
         Self {
-            universe,
-            depth,
-            root,
+            universe: Universe::new(),
+            root: TreeRef::EMPTY,
+            depth: 0,
         }
     }
 
@@ -60,7 +57,7 @@ impl HashLife {
 
 impl HashLife {
     fn expand(&mut self) {
-        self.root = self.universe.expand_universe(self.depth, self.root);
+        self.root = self.universe.expand_universe(self.root);
         self.depth += 1;
     }
 }

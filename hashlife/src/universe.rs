@@ -5,31 +5,44 @@ use crate::p3::P3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TreeRef(usize);
 
+impl TreeRef {
+    pub const EMPTY: TreeRef = TreeRef(0);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Tree {
-    Leaf(bool),
+    Empty,
+    Alive,
     Branch([TreeRef; 4]),
 }
 
-#[derive(Default, Clone, Debug)]
+impl Tree {
+    fn is_empty(&self) -> bool {
+        match self {
+            Tree::Branch(subtree) => subtree == &[TreeRef::EMPTY; 4],
+            Tree::Empty => true,
+            Tree::Alive => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Universe {
     nodes: Vec<Tree>,
-    empty_trees: Vec<TreeRef>,
     populations: Vec<usize>,
     next_gen: HashMap<(TreeRef, bool), TreeRef>,
     interned_nodes: HashMap<Tree, TreeRef>,
 }
 
 impl Universe {
-    pub fn empty_tree(&mut self, depth: usize) -> TreeRef {
-        while self.empty_trees.len() <= depth {
-            let tr = match self.empty_trees.last() {
-                Some(&tr) => self.canonicalise(Tree::Branch([tr, tr, tr, tr])),
-                None => self.canonicalise(Tree::Leaf(false)),
-            };
-            self.empty_trees.push(tr);
+    pub fn new() -> Self {
+        Self {
+            // index 0 must be empty tree
+            nodes: vec![Tree::Empty],
+            populations: vec![0],
+            next_gen: HashMap::new(),
+            interned_nodes: HashMap::new(),
         }
-        self.empty_trees[depth]
     }
 
     pub fn get_node(&self, mut tr: TreeRef, mut p: P3) -> Option<TreeRef> {
@@ -49,38 +62,48 @@ impl Universe {
             stack.push((subtree, i));
             tr = subtree[i];
         }
-        stack.into_iter().rev().fold(
-            self.canonicalise(Tree::Leaf(true)),
-            |tr, (mut subtree, i)| {
+        stack
+            .into_iter()
+            .rev()
+            .fold(self.canonicalise(Tree::Alive), |tr, (mut subtree, i)| {
                 subtree[i] = tr;
                 self.canonicalise(Tree::Branch(subtree))
-            },
-        )
+            })
     }
 
-    pub fn expand_universe(&mut self, level: usize, tr: TreeRef) -> TreeRef {
-        let [nw, ne, sw, se] = self.subtree(tr);
-        let border = self.empty_tree(level - 1);
-        let subtree = [
-            self.canonicalise(Tree::Branch([border, border, border, nw])),
-            self.canonicalise(Tree::Branch([border, border, ne, border])),
-            self.canonicalise(Tree::Branch([border, sw, border, border])),
-            self.canonicalise(Tree::Branch([se, border, border, border])),
-        ];
+    pub fn expand_universe(&mut self, tr: TreeRef) -> TreeRef {
+        let empty = TreeRef::EMPTY;
+        let subtree = match self.nodes[tr.0] {
+            Tree::Empty => return empty,
+            Tree::Alive => [empty, empty, empty, tr],
+            Tree::Branch([nw, ne, sw, se]) => [
+                self.canonicalise(Tree::Branch([empty, empty, empty, nw])),
+                self.canonicalise(Tree::Branch([empty, empty, ne, empty])),
+                self.canonicalise(Tree::Branch([empty, sw, empty, empty])),
+                self.canonicalise(Tree::Branch([se, empty, empty, empty])),
+            ],
+        };
         self.canonicalise(Tree::Branch(subtree))
     }
 
     pub fn alive(&self, TreeRef(i): TreeRef) -> bool {
         match self.nodes[i] {
-            Tree::Leaf(alive) => alive,
-            Tree::Branch(..) => panic!(),
+            Tree::Alive => true,
+            Tree::Empty => false,
+            _ => panic!(),
         }
     }
 
     pub fn subtree(&self, TreeRef(i): TreeRef) -> [TreeRef; 4] {
         match self.nodes[i] {
-            Tree::Leaf(..) => panic!(),
             Tree::Branch(subtree) => subtree,
+            Tree::Empty => [
+                TreeRef::EMPTY,
+                TreeRef::EMPTY,
+                TreeRef::EMPTY,
+                TreeRef::EMPTY,
+            ],
+            _ => panic!(),
         }
     }
 
@@ -183,11 +206,14 @@ impl Universe {
 
 impl Universe {
     fn canonicalise(&mut self, tree: Tree) -> TreeRef {
+        if tree.is_empty() {
+            return TreeRef::EMPTY;
+        }
         *self.interned_nodes.entry(tree).or_insert_with_key(|&tree| {
             let population = match tree {
-                Tree::Leaf(true) => 1,
-                Tree::Leaf(false) => 0,
+                Tree::Alive => 1,
                 Tree::Branch(subtree) => subtree.map(|TreeRef(i)| self.populations[i]).iter().sum(),
+                Tree::Empty => unreachable!(),
             };
             self.populations.push(population);
             self.nodes.push(tree);
@@ -200,8 +226,8 @@ impl Universe {
             let center = bitmask & 0b0000_0010_0000 != 0;
             let neighbours = (bitmask & 0b0111_0101_0111).count_ones();
             match (center, neighbours) {
-                (true, 2 | 3) | (false, 3) => Tree::Leaf(true),
-                _ => Tree::Leaf(false),
+                (true, 2 | 3) | (false, 3) => Tree::Alive,
+                _ => Tree::Empty,
             }
         }
         let subtree = [
