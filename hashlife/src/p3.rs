@@ -14,7 +14,7 @@ impl P3 {
         Self::new(0, 0, z)
     }
 
-    pub fn floor_exists(&self) -> bool {
+    pub fn within_tree(&self) -> bool {
         // y and x should be in the pyramid height z about (0, 0).
         let P3 { y, x, z } = *self;
         P3::origin(z).contains(P3 { y, x, z: 0 })
@@ -71,15 +71,15 @@ mod tests {
 
     #[test]
     fn test_doesnt_exist() {
-        assert!(!P3::new(4, 4, 2).floor_exists());
-        assert!(!P3::new(4, 4, 3).floor_exists());
-        assert!(!P3::new(-1, -1, 0).floor_exists());
+        assert!(!P3::new(4, 4, 2).within_tree());
+        assert!(!P3::new(4, 4, 3).within_tree());
+        assert!(!P3::new(-1, -1, 0).within_tree());
     }
 
     #[test]
     fn test_exists() {
-        assert!(P3::new(0, 0, 0).floor_exists());
-        assert!(P3::new(-4, -4, 3).floor_exists());
+        assert!(P3::new(0, 0, 0).within_tree());
+        assert!(P3::new(-4, -4, 3).within_tree());
     }
 
     #[test]

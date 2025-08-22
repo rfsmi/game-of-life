@@ -1,4 +1,4 @@
 [workspace]
 resolver = "3"
-members = ["app", "gol"]
+members = ["app", "hashlife"]
 default-members = ["app"]

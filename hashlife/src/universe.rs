@@ -32,11 +32,14 @@ impl Universe {
         self.empty_trees[depth]
     }
 
-    pub fn get_node(&self, mut tr: TreeRef, mut p: P3) -> TreeRef {
+    pub fn get_node(&self, mut tr: TreeRef, mut p: P3) -> Option<TreeRef> {
+        if !p.within_tree() {
+            return None;
+        }
         while let Some(i) = p.descend() {
             tr = self.subtree(tr)[i];
         }
-        tr
+        Some(tr)
     }
 
     pub fn set_bit(&mut self, mut tr: TreeRef, mut p: P3) -> TreeRef {
@@ -101,7 +104,7 @@ impl Universe {
                         todo.push(State::Canonicalise);
                         todo.extend(ps.map(State::Reframe));
                     }
-                    None => done.push(self.get_node(tr, P3 { z, ..p })),
+                    None => done.push(self.get_node(tr, P3 { z, ..p }).unwrap()),
                 },
                 State::Canonicalise => {
                     let subtree = [done.pop(), done.pop(), done.pop(), done.pop()];
@@ -215,7 +218,7 @@ impl Universe {
         for y in -2..2 {
             for x in -2..2 {
                 bitmask <<= 1;
-                let tr = self.get_node(tr, P3 { y, x, z: 2 });
+                let tr = self.get_node(tr, P3 { y, x, z: 2 }).unwrap();
                 if self.alive(tr) {
                     bitmask += 1;
                 }
