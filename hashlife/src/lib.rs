@@ -48,20 +48,20 @@ impl HashLife {
         self.root = self.universe.step(self.root, self.depth, superspeed_depth);
         self.depth -= 1;
     }
+
+    pub fn set_bit(&mut self, (y, x): (isize, isize)) {
+        while !P3::new(y, x, self.depth).within_tree() {
+            self.expand();
+        }
+        let p = P3::new(y, x, self.depth);
+        self.root = self.universe.set_bit(self.root, p);
+    }
 }
 
 impl HashLife {
     fn expand(&mut self) {
         self.root = self.universe.expand_universe(self.depth, self.root);
         self.depth += 1;
-    }
-
-    fn set_bit(&mut self, (y, x): (isize, isize)) {
-        while !P3::new(y, x, self.depth).within_tree() {
-            self.expand();
-        }
-        let p = P3::new(y, x, self.depth);
-        self.root = self.universe.set_bit(self.root, p);
     }
 }
 
