@@ -39,15 +39,18 @@ impl HashLife {
     }
 
     pub fn render(&self, settings: Settings, view: View) -> Vec<Rgba> {
-        let view_size = settings.width as f64;
         let mut pixels = Vec::with_capacity(settings.height * settings.width);
         let (y, x) = view.center;
-        let pixels_per_cell = view.zoom * settings.cell_size;
+        let mut z = self.depth as f64;
+        let mut pixels_per_cell = view.zoom * settings.cell_size;
+        if pixels_per_cell < 1.0 {
+            z += pixels_per_cell.log2();
+            pixels_per_cell = 1.0;
+        }
         let (y, x) = (
             y - settings.height as f64 / pixels_per_cell / 2.,
             x - settings.width as f64 / pixels_per_cell / 2.,
         );
-        let z = view_size.log2().min(self.depth as f64);
         for i in 0..settings.height {
             for j in 0..settings.width {
                 let p = (
